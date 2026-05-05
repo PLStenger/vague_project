@@ -14,4 +14,5 @@ First, open your terminal. Then, run these two command lines :
 
 ### Running the script with :
 
-    time nohup bash pipeline_complete.sh &> pipeline_complete.out
+    time nohup bash 01_qiime2_preprocess.sh &> 01_qiime2_preprocess.out
+    time nohup bash 02_diversity_analysis.sh &> 02_diversity_analysis.out
