@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-RAREFACTION_DEPTH=10000
+RAREFACTION_DEPTH=42105
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --depth) RAREFACTION_DEPTH="$2"; shift 2 ;;
