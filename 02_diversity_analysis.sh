@@ -68,7 +68,10 @@ conda run -n "$QIIME2_ENV" biom convert \
   -o "${TMPDIR}/controls_export/controls_table.tsv" \
   --to-tsv
 
-awk 'BEGIN{FS="\t"} NR>2 {sum=0; for(i=2;i<=NF;i++) sum+=$i; if(sum>0) print $1}' "${TMPDIR}/controls_export/controls_table.tsv" > "${DBDIR}/features-in-controls.txt"
+{ echo -e "feature-id"; \
+  awk 'BEGIN{FS="\t"} NR>2 {sum=0; for(i=2;i<=NF;i++) sum+=$i; if(sum>0) print $1}' \
+  "${TMPDIR}/controls_export/controls_table.tsv"; \
+} > "${DBDIR}/features-in-controls.txt"
 
 CONTROL_FEATURES=$(wc -l < "${DBDIR}/features-in-controls.txt" | tr -d ' ')
 log "ASV détectés dans les contrôles: ${CONTROL_FEATURES}"
