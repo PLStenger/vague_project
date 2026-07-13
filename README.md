@@ -15,4 +15,5 @@ First, open your terminal. Then, run these two command lines :
 ### Running the script with :
 
     time nohup bash 01_qiime2_preprocess.sh &> 01_qiime2_preprocess.out
+    time nohup bash 01_qiime2_preprocess_PA_KNS.sh &> 01_qiime2_preprocess_PA_KNS.out
     time nohup bash 02_diversity_analysis.sh &> 02_diversity_analysis.out
