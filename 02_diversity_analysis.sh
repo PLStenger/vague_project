@@ -5,7 +5,7 @@
 # Usage   : bash 02_diversity_analysis.sh --depth 42105
 # =============================================================================
 
-set -euo pipefail
+#set -euo pipefail
 
 RAREFACTION_DEPTH=42105
 while [[ $# -gt 0 ]]; do
