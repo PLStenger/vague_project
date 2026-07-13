@@ -41,197 +41,237 @@ cd "${QDIR}/core"
 # ÉTAPES DÉJÀ EFFECTUÉES — commentées
 # =============================================================================
 
-# log "Préparation listes contrôles / non-contrôles"
-# awk -F'\t' '...' "${DBDIR}/sample-metadata.tsv" > "${DBDIR}/control-samples.txt"
-# awk -F'\t' '...' "${DBDIR}/sample-metadata.tsv" > "${DBDIR}/non-control-samples.txt"
+### log "Préparation listes contrôles / non-contrôles"
+### awk -F'\t' '...' "${DBDIR}/sample-metadata.tsv" > "${DBDIR}/control-samples.txt"
+### awk -F'\t' '...' "${DBDIR}/sample-metadata.tsv" > "${DBDIR}/non-control-samples.txt"
+##
+### log "Extraction table des contrôles"
+### conda run -n "$QIIME2_ENV" qiime feature-table filter-samples \
+###     --i-table table.qza \
+###     --m-metadata-file "${DBDIR}/sample-metadata.tsv" \
+###     --p-where "[is_control]='yes'" \
+###     --o-filtered-table table-controls-only.qza
+### conda run -n "$QIIME2_ENV" qiime feature-table summarize \
+###     --i-table table-controls-only.qza \
+###     --m-sample-metadata-file "${DBDIR}/sample-metadata.tsv" \
+###     --o-visualization ../visual/table-controls-only-summary.qzv
+##
+### log "Extraction liste des ASV présents dans les contrôles"
+### mkdir -p "${TMPDIR}/controls_export"
+### rm -rf "${TMPDIR}/controls_export"/* 2>/dev/null || true
+### conda run -n "$QIIME2_ENV" qiime tools export \
+###     --input-path table-controls-only.qza \
+###     --output-path "${TMPDIR}/controls_export"
+### conda run -n "$QIIME2_ENV" biom convert \
+###     -i "${TMPDIR}/controls_export/feature-table.biom" \
+###     -o "${TMPDIR}/controls_export/controls_table.tsv" \
+###     --to-tsv
+### { echo -e "feature-id"; \
+###   awk 'BEGIN{FS="\t"} NR>2 {sum=0; for(i=2;i<=NF;i++) sum+=$i; if(sum>0) print $1}' \
+###   "${TMPDIR}/controls_export/controls_table.tsv"; \
+### } > "${DBDIR}/features-in-controls.txt"
+##
+### log "Extraction table échantillons biologiques"
+### conda run -n "$QIIME2_ENV" qiime feature-table filter-samples \
+###     --i-table table.qza \
+###     --m-metadata-file "${DBDIR}/sample-metadata.tsv" \
+###     --p-where "[is_control]!='yes'" \
+###     --o-filtered-table table-non-controls.qza
+### conda run -n "$QIIME2_ENV" qiime feature-table summarize \
+###     --i-table table-non-controls.qza \
+###     --m-sample-metadata-file "${DBDIR}/sample-metadata.tsv" \
+###     --o-visualization ../visual/table-non-controls-summary.qzv
+##
+### log "Retrait des ASV présents dans les contrôles"
+### conda run -n "$QIIME2_ENV" qiime feature-table filter-features \
+###     --i-table table-non-controls.qza \
+###     --m-metadata-file "${DBDIR}/features-in-controls.txt" \
+###     --p-exclude-ids \
+###     --o-filtered-table table-decontam.qza
+### conda run -n "$QIIME2_ENV" qiime feature-table summarize \
+###     --i-table table-decontam.qza \
+###     --m-sample-metadata-file "${DBDIR}/sample-metadata.tsv" \
+###     --o-visualization ../visual/table-decontam-summary.qzv
+##
+### log "Filtrage rep-seqs sur ASV décontaminés"
+### conda run -n "$QIIME2_ENV" qiime feature-table filter-seqs \
+###     --i-data rep-seqs.qza \
+###     --i-table table-decontam.qza \
+###     --o-filtered-data rep-seqs-decontam.qza
+##
+### =============================================================================
+### ÉTAPE 07a — CLASSIFICATION SILVA 138.2 (16S — bactéries + archées)
+### À LANCER
+### =============================================================================
+##log "Classification taxonomique SILVA 138.2 (16S)"
+##
+##CLASSIFIER_SILVA="${DBDIR}/silva-138.2-ssu-nr99-515f-926r-classifier.qza"
+##CLASSIFIER_SOURCE="/nvme/bio/data_fungi/valormicro_nc/98_databasefiles/silva-138.2-ssu-nr99-515f-926r-classifier.qza"
+##
+##if [[ ! -f "$CLASSIFIER_SILVA" ]]; then
+##    log "Copie du classifier SILVA depuis valormicro_nc"
+##    cp "$CLASSIFIER_SOURCE" "$CLASSIFIER_SILVA" || \
+##        { log "ERREUR: Classifier SILVA source introuvable"; exit 1; }
+##fi
+##
+##conda run -n "$QIIME2_ENV" qiime tools validate "$CLASSIFIER_SILVA" || \
+##    { log "ERREUR: Classifier SILVA invalide"; exit 1; }
+##
+##conda run -n "$QIIME2_ENV" qiime feature-classifier classify-sklearn \
+##    --i-classifier "$CLASSIFIER_SILVA" \
+##    --i-reads rep-seqs-decontam.qza \
+##    --p-n-jobs "$NTHREADS" \
+##    --o-classification taxonomy-silva-raw.qza
+##
+##conda run -n "$QIIME2_ENV" qiime metadata tabulate \
+##    --m-input-file taxonomy-silva-raw.qza \
+##    --o-visualization ../visual/taxonomy-silva-raw.qzv
+##
+### =============================================================================
+### ÉTAPE 07b — FILTRAGE POST-SILVA : séparer prokaryotes et candidats eucaryotes
+### Les ASVs "Unassigned" ou classées Eukaryota par SILVA sont des candidats 18S
+### À LANCER
+### =============================================================================
+##log "Séparation ASVs 16S (procaryotes) / candidats 18S (eucaryotes)"
+##
+### Table et séquences strictement procaryotes (bactéries + archées)
+### Exclut Eukaryota, Mitochondria, Chloroplast, Unassigned
+##conda run -n "$QIIME2_ENV" qiime taxa filter-table \
+##    --i-table table-decontam.qza \
+##    --i-taxonomy taxonomy-silva-raw.qza \
+##    --p-exclude "Eukaryota,Mitochondria,Chloroplast,Unassigned" \
+##    --o-filtered-table table-prokaryotes.qza
+##
+##conda run -n "$QIIME2_ENV" qiime taxa filter-seqs \
+##    --i-sequences rep-seqs-decontam.qza \
+##    --i-taxonomy taxonomy-silva-raw.qza \
+##    --p-exclude "Eukaryota,Mitochondria,Chloroplast,Unassigned" \
+##    --o-filtered-sequences rep-seqs-prokaryotes.qza
+##
+##conda run -n "$QIIME2_ENV" qiime feature-table summarize \
+##    --i-table table-prokaryotes.qza \
+##    --m-sample-metadata-file "${DBDIR}/sample-metadata.tsv" \
+##    --o-visualization ../visual/table-prokaryotes-summary.qzv
+##
+### Table et séquences candidats eucaryotes :
+### inclut Eukaryota assigné par SILVA + tout ce que SILVA n'a pas su assigner
+##conda run -n "$QIIME2_ENV" qiime taxa filter-table \
+##    --i-table table-decontam.qza \
+##    --i-taxonomy taxonomy-silva-raw.qza \
+##    --p-include "Eukaryota,Unassigned" \
+##    --o-filtered-table table-euk-candidates.qza
+##
+##conda run -n "$QIIME2_ENV" qiime taxa filter-seqs \
+##    --i-sequences rep-seqs-decontam.qza \
+##    --i-taxonomy taxonomy-silva-raw.qza \
+##    --p-include "Eukaryota,Unassigned" \
+##    --o-filtered-sequences rep-seqs-euk-candidates.qza
+##
+##conda run -n "$QIIME2_ENV" qiime feature-table summarize \
+##    --i-table table-euk-candidates.qza \
+##    --m-sample-metadata-file "${DBDIR}/sample-metadata.tsv" \
+##    --o-visualization ../visual/table-euk-candidates-summary.qzv
+##
+### =============================================================================
+### ÉTAPE 07c — TÉLÉCHARGEMENT + PRÉPARATION CLASSIFIER PR2 V4-V5 POUR 18S
+### PR2 v5 est la référence pour protistes / champignons / métazoaires marins
+### À LANCER (téléchargement une seule fois, long ~15 min selon connexion)
+### =============================================================================
+##log "Préparation classifier PR2 v5 pour les eucaryotes (18S V4-V5)"
+##
+##PR2_CLASSIFIER="${DBDIR}/pr2-v5-classifier-515F-926R.qza"
+##PR2_SEQS_RAW="${DBDIR}/pr2_v5_SSU_seqs.qza"
+##PR2_TAX_RAW="${DBDIR}/pr2_v5_SSU_tax.qza"
+##PR2_SEQS_TRIMMED="${DBDIR}/pr2_v5_515F_926R_seqs.qza"
+##
+##if [[ ! -f "$PR2_CLASSIFIER" ]]; then
+##    log "Téléchargement PR2 v5.0.0 depuis GitHub releases"
+##
+##    # Séquences et taxonomie PR2 v5 (full-length SSU, format QIIME2)
+##    wget -q -O "${DBDIR}/pr2_v5.0.0_SSU_seqs.fasta.gz" \
+##        "https://github.com/pr2database/pr2database/releases/download/v5.0.0/pr2_version_5.0.0_SSU.fasta.gz"
+##    wget -q -O "${DBDIR}/pr2_v5.0.0_SSU_tax.tsv" \
+##        "https://github.com/pr2database/pr2database/releases/download/v5.0.0/pr2_version_5.0.0_SSU.tsv"
+##
+##    # Reformater la taxonomie PR2 au format QIIME2 (7 niveaux tab-séparés)
+##    python3 << 'PYEOF'
+##import csv, gzip, os
+##
+##tax_in  = "/nvme/bio/data_fungi/vague_project/98_databasefiles/pr2_v5.0.0_SSU_tax.tsv"
+##tax_out = "/nvme/bio/data_fungi/vague_project/98_databasefiles/pr2_v5_tax_qiime2.tsv"
+##
+### Les colonnes PR2 : pr2_accession, kingdom, supergroup, division, class, order, family, genus, species, ...
+### On construit une chaîne taxonomique à 8 niveaux compatible QIIME2
+##with open(tax_in, newline='') as fi, open(tax_out, 'w') as fo:
+##    fo.write("Feature ID\tTaxon\n")
+##    r = csv.DictReader(fi, delimiter='\t')
+##    for row in r:
+##        acc = row.get('pr2_accession') or row.get('seqid') or list(row.values())[0]
+##        levels = [
+##            row.get('kingdom',''),
+##            row.get('supergroup',''),
+##            row.get('division',''),
+##            row.get('class',''),
+##            row.get('order',''),
+##            row.get('family',''),
+##            row.get('genus',''),
+##            row.get('species',''),
+##        ]
+##        taxon = "; ".join(f"d__{l}" if i==0 else
+##                          f"p__{l}" if i==1 else
+##                          f"c__{l}" if i==3 else
+##                          f"o__{l}" if i==4 else
+##                          f"f__{l}" if i==5 else
+##                          f"g__{l}" if i==6 else
+##                          f"s__{l}" if i==7 else l
+##                          for i,l in enumerate(levels) if l)
+##        fo.write(f"{acc}\t{taxon}\n")
+##print("Taxonomie PR2 reformatée")
+##PYEOF
+##
+##    # Importer les séquences FASTA PR2 dans QIIME2
+##    gunzip -f "${DBDIR}/pr2_v5.0.0_SSU_seqs.fasta.gz" -c \
+##        > "${DBDIR}/pr2_v5.0.0_SSU_seqs.fasta"
 
-# log "Extraction table des contrôles"
-# conda run -n "$QIIME2_ENV" qiime feature-table filter-samples \
-#     --i-table table.qza \
-#     --m-metadata-file "${DBDIR}/sample-metadata.tsv" \
-#     --p-where "[is_control]='yes'" \
-#     --o-filtered-table table-controls-only.qza
-# conda run -n "$QIIME2_ENV" qiime feature-table summarize \
-#     --i-table table-controls-only.qza \
-#     --m-sample-metadata-file "${DBDIR}/sample-metadata.tsv" \
-#     --o-visualization ../visual/table-controls-only-summary.qzv
 
-# log "Extraction liste des ASV présents dans les contrôles"
-# mkdir -p "${TMPDIR}/controls_export"
-# rm -rf "${TMPDIR}/controls_export"/* 2>/dev/null || true
-# conda run -n "$QIIME2_ENV" qiime tools export \
-#     --input-path table-controls-only.qza \
-#     --output-path "${TMPDIR}/controls_export"
-# conda run -n "$QIIME2_ENV" biom convert \
-#     -i "${TMPDIR}/controls_export/feature-table.biom" \
-#     -o "${TMPDIR}/controls_export/controls_table.tsv" \
-#     --to-tsv
-# { echo -e "feature-id"; \
-#   awk 'BEGIN{FS="\t"} NR>2 {sum=0; for(i=2;i<=NF;i++) sum+=$i; if(sum>0) print $1}' \
-#   "${TMPDIR}/controls_export/controls_table.tsv"; \
-# } > "${DBDIR}/features-in-controls.txt"
+# ============================================================
+# IMPORT DANS QIIME2
+# ============================================================
+conda run -n qiime2-amplicon-2025.7 qiime tools import \
+    --type 'FeatureData[Sequence]' \
+    --input-path /nvme/bio/data_fungi/vague_project/98_databasefiles/pr2_version_5.0.0_SSU_mothur.fasta \
+    --output-path /nvme/bio/data_fungi/vague_project/98_databasefiles/pr2_v5_SSU_seqs.qza
 
-# log "Extraction table échantillons biologiques"
-# conda run -n "$QIIME2_ENV" qiime feature-table filter-samples \
-#     --i-table table.qza \
-#     --m-metadata-file "${DBDIR}/sample-metadata.tsv" \
-#     --p-where "[is_control]!='yes'" \
-#     --o-filtered-table table-non-controls.qza
-# conda run -n "$QIIME2_ENV" qiime feature-table summarize \
-#     --i-table table-non-controls.qza \
-#     --m-sample-metadata-file "${DBDIR}/sample-metadata.tsv" \
-#     --o-visualization ../visual/table-non-controls-summary.qzv
+conda run -n qiime2-amplicon-2025.7 qiime tools import \
+    --type 'FeatureData[Taxonomy]' \
+    --input-format HeaderlessTSVTaxonomyFormat \
+    --input-path /nvme/bio/data_fungi/vague_project/98_databasefiles/pr2_v5_tax_qiime2.tsv \
+    --output-path /nvme/bio/data_fungi/vague_project/98_databasefiles/pr2_v5_SSU_tax.qza
 
-# log "Retrait des ASV présents dans les contrôles"
-# conda run -n "$QIIME2_ENV" qiime feature-table filter-features \
-#     --i-table table-non-controls.qza \
-#     --m-metadata-file "${DBDIR}/features-in-controls.txt" \
-#     --p-exclude-ids \
-#     --o-filtered-table table-decontam.qza
-# conda run -n "$QIIME2_ENV" qiime feature-table summarize \
-#     --i-table table-decontam.qza \
-#     --m-sample-metadata-file "${DBDIR}/sample-metadata.tsv" \
-#     --o-visualization ../visual/table-decontam-summary.qzv
+# ============================================================
+# EXTRACTION IN-SILICO V4-V5 avec les amorces 515F/926R
+# ============================================================
+conda run -n qiime2-amplicon-2025.7 qiime feature-classifier extract-reads \
+    --i-sequences /nvme/bio/data_fungi/vague_project/98_databasefiles/pr2_v5_SSU_seqs.qza \
+    --p-f-primer GTGYCAGCMGCCGCGGTAA \
+    --p-r-primer CCGYCAATTYMTTTRAGTTT \
+    --p-min-length 200 \
+    --p-max-length 600 \
+    --p-n-jobs 16 \
+    --o-reads /nvme/bio/data_fungi/vague_project/98_databasefiles/pr2_v5_515F_926R_seqs.qza
 
-# log "Filtrage rep-seqs sur ASV décontaminés"
-# conda run -n "$QIIME2_ENV" qiime feature-table filter-seqs \
-#     --i-data rep-seqs.qza \
-#     --i-table table-decontam.qza \
-#     --o-filtered-data rep-seqs-decontam.qza
+# ============================================================
+# ENTRAÎNEMENT DU CLASSIFIER 
+# ============================================================
+conda run -n qiime2-amplicon-2025.7 qiime feature-classifier fit-classifier-naive-bayes \
+    --i-reference-reads /nvme/bio/data_fungi/vague_project/98_databasefiles/pr2_v5_515F_926R_seqs.qza \
+    --i-reference-taxonomy /nvme/bio/data_fungi/vague_project/98_databasefiles/pr2_v5_SSU_tax.qza \
+    --o-classifier /nvme/bio/data_fungi/vague_project/98_databasefiles/pr2-v5-classifier-515F-926R.qza
 
-# =============================================================================
-# ÉTAPE 07a — CLASSIFICATION SILVA 138.2 (16S — bactéries + archées)
-# À LANCER
-# =============================================================================
-log "Classification taxonomique SILVA 138.2 (16S)"
 
-CLASSIFIER_SILVA="${DBDIR}/silva-138.2-ssu-nr99-515f-926r-classifier.qza"
-CLASSIFIER_SOURCE="/nvme/bio/data_fungi/valormicro_nc/98_databasefiles/silva-138.2-ssu-nr99-515f-926r-classifier.qza"
 
-if [[ ! -f "$CLASSIFIER_SILVA" ]]; then
-    log "Copie du classifier SILVA depuis valormicro_nc"
-    cp "$CLASSIFIER_SOURCE" "$CLASSIFIER_SILVA" || \
-        { log "ERREUR: Classifier SILVA source introuvable"; exit 1; }
-fi
+echo "Suite ancien pipeline"
 
-conda run -n "$QIIME2_ENV" qiime tools validate "$CLASSIFIER_SILVA" || \
-    { log "ERREUR: Classifier SILVA invalide"; exit 1; }
-
-conda run -n "$QIIME2_ENV" qiime feature-classifier classify-sklearn \
-    --i-classifier "$CLASSIFIER_SILVA" \
-    --i-reads rep-seqs-decontam.qza \
-    --p-n-jobs "$NTHREADS" \
-    --o-classification taxonomy-silva-raw.qza
-
-conda run -n "$QIIME2_ENV" qiime metadata tabulate \
-    --m-input-file taxonomy-silva-raw.qza \
-    --o-visualization ../visual/taxonomy-silva-raw.qzv
-
-# =============================================================================
-# ÉTAPE 07b — FILTRAGE POST-SILVA : séparer prokaryotes et candidats eucaryotes
-# Les ASVs "Unassigned" ou classées Eukaryota par SILVA sont des candidats 18S
-# À LANCER
-# =============================================================================
-log "Séparation ASVs 16S (procaryotes) / candidats 18S (eucaryotes)"
-
-# Table et séquences strictement procaryotes (bactéries + archées)
-# Exclut Eukaryota, Mitochondria, Chloroplast, Unassigned
-conda run -n "$QIIME2_ENV" qiime taxa filter-table \
-    --i-table table-decontam.qza \
-    --i-taxonomy taxonomy-silva-raw.qza \
-    --p-exclude "Eukaryota,Mitochondria,Chloroplast,Unassigned" \
-    --o-filtered-table table-prokaryotes.qza
-
-conda run -n "$QIIME2_ENV" qiime taxa filter-seqs \
-    --i-sequences rep-seqs-decontam.qza \
-    --i-taxonomy taxonomy-silva-raw.qza \
-    --p-exclude "Eukaryota,Mitochondria,Chloroplast,Unassigned" \
-    --o-filtered-sequences rep-seqs-prokaryotes.qza
-
-conda run -n "$QIIME2_ENV" qiime feature-table summarize \
-    --i-table table-prokaryotes.qza \
-    --m-sample-metadata-file "${DBDIR}/sample-metadata.tsv" \
-    --o-visualization ../visual/table-prokaryotes-summary.qzv
-
-# Table et séquences candidats eucaryotes :
-# inclut Eukaryota assigné par SILVA + tout ce que SILVA n'a pas su assigner
-conda run -n "$QIIME2_ENV" qiime taxa filter-table \
-    --i-table table-decontam.qza \
-    --i-taxonomy taxonomy-silva-raw.qza \
-    --p-include "Eukaryota,Unassigned" \
-    --o-filtered-table table-euk-candidates.qza
-
-conda run -n "$QIIME2_ENV" qiime taxa filter-seqs \
-    --i-sequences rep-seqs-decontam.qza \
-    --i-taxonomy taxonomy-silva-raw.qza \
-    --p-include "Eukaryota,Unassigned" \
-    --o-filtered-sequences rep-seqs-euk-candidates.qza
-
-conda run -n "$QIIME2_ENV" qiime feature-table summarize \
-    --i-table table-euk-candidates.qza \
-    --m-sample-metadata-file "${DBDIR}/sample-metadata.tsv" \
-    --o-visualization ../visual/table-euk-candidates-summary.qzv
-
-# =============================================================================
-# ÉTAPE 07c — TÉLÉCHARGEMENT + PRÉPARATION CLASSIFIER PR2 V4-V5 POUR 18S
-# PR2 v5 est la référence pour protistes / champignons / métazoaires marins
-# À LANCER (téléchargement une seule fois, long ~15 min selon connexion)
-# =============================================================================
-log "Préparation classifier PR2 v5 pour les eucaryotes (18S V4-V5)"
-
-PR2_CLASSIFIER="${DBDIR}/pr2-v5-classifier-515F-926R.qza"
-PR2_SEQS_RAW="${DBDIR}/pr2_v5_SSU_seqs.qza"
-PR2_TAX_RAW="${DBDIR}/pr2_v5_SSU_tax.qza"
-PR2_SEQS_TRIMMED="${DBDIR}/pr2_v5_515F_926R_seqs.qza"
-
-if [[ ! -f "$PR2_CLASSIFIER" ]]; then
-    log "Téléchargement PR2 v5.0.0 depuis GitHub releases"
-
-    # Séquences et taxonomie PR2 v5 (full-length SSU, format QIIME2)
-    wget -q -O "${DBDIR}/pr2_v5.0.0_SSU_seqs.fasta.gz" \
-        "https://github.com/pr2database/pr2database/releases/download/v5.0.0/pr2_version_5.0.0_SSU.fasta.gz"
-    wget -q -O "${DBDIR}/pr2_v5.0.0_SSU_tax.tsv" \
-        "https://github.com/pr2database/pr2database/releases/download/v5.0.0/pr2_version_5.0.0_SSU.tsv"
-
-    # Reformater la taxonomie PR2 au format QIIME2 (7 niveaux tab-séparés)
-    python3 << 'PYEOF'
-import csv, gzip, os
-
-tax_in  = "/nvme/bio/data_fungi/vague_project/98_databasefiles/pr2_v5.0.0_SSU_tax.tsv"
-tax_out = "/nvme/bio/data_fungi/vague_project/98_databasefiles/pr2_v5_tax_qiime2.tsv"
-
-# Les colonnes PR2 : pr2_accession, kingdom, supergroup, division, class, order, family, genus, species, ...
-# On construit une chaîne taxonomique à 8 niveaux compatible QIIME2
-with open(tax_in, newline='') as fi, open(tax_out, 'w') as fo:
-    fo.write("Feature ID\tTaxon\n")
-    r = csv.DictReader(fi, delimiter='\t')
-    for row in r:
-        acc = row.get('pr2_accession') or row.get('seqid') or list(row.values())[0]
-        levels = [
-            row.get('kingdom',''),
-            row.get('supergroup',''),
-            row.get('division',''),
-            row.get('class',''),
-            row.get('order',''),
-            row.get('family',''),
-            row.get('genus',''),
-            row.get('species',''),
-        ]
-        taxon = "; ".join(f"d__{l}" if i==0 else
-                          f"p__{l}" if i==1 else
-                          f"c__{l}" if i==3 else
-                          f"o__{l}" if i==4 else
-                          f"f__{l}" if i==5 else
-                          f"g__{l}" if i==6 else
-                          f"s__{l}" if i==7 else l
-                          for i,l in enumerate(levels) if l)
-        fo.write(f"{acc}\t{taxon}\n")
-print("Taxonomie PR2 reformatée")
-PYEOF
-
-    # Importer les séquences FASTA PR2 dans QIIME2
-    gunzip -f "${DBDIR}/pr2_v5.0.0_SSU_seqs.fasta.gz" -c \
-        > "${DBDIR}/pr2_v5.0.0_SSU_seqs.fasta"
 
     conda run -n "$QIIME2_ENV" qiime tools import \
         --type 'FeatureData[Sequence]' \
