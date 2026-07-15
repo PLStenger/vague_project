@@ -115,6 +115,120 @@ cd "${QDIR}/core"
 #     --i-table table-decontam.qza \
 #     --o-filtered-data rep-seqs-decontam.qza
 
+# =============================================================================
+# DÉCONTAMINATION SITE-SPÉCIFIQUE
+#
+# Principe :
+#   1. Extraire les ASV présentes dans les témoins PA  → features-in-controls-PA.txt
+#   2. Extraire les ASV présentes dans les témoins KNS → features-in-controls-KNS.txt
+#   3. Filtrer les échantillons PA : retirer les ASV des contrôles PA
+#   4. Filtrer les échantillons KNS : retirer les ASV des contrôles KNS
+#   5. Fusionner les deux tables filtrées → table-decontam.qza
+# =============================================================================
+
+log "Extraction table contrôles PA"
+conda run -n "$QIIME2_ENV" qiime feature-table filter-samples \
+    --i-table table.qza \
+    --m-metadata-file "${DBDIR}/sample-metadata.tsv" \
+    --p-where "[is_control]='yes' AND [location]='PA'" \
+    --o-filtered-table table-controls-PA.qza
+
+log "Extraction table contrôles KNS"
+conda run -n "$QIIME2_ENV" qiime feature-table filter-samples \
+    --i-table table.qza \
+    --m-metadata-file "${DBDIR}/sample-metadata.tsv" \
+    --p-where "[is_control]='yes' AND [location]='KNS'" \
+    --o-filtered-table table-controls-KNS.qza
+
+log "Extraction liste ASV des contrôles PA"
+rm -rf "${TMPDIR}/controls_PA_export"
+conda run -n "$QIIME2_ENV" qiime tools export \
+    --input-path table-controls-PA.qza \
+    --output-path "${TMPDIR}/controls_PA_export"
+conda run -n "$QIIME2_ENV" biom convert \
+    -i "${TMPDIR}/controls_PA_export/feature-table.biom" \
+    -o "${TMPDIR}/controls_PA_export/controls_PA.tsv" \
+    --to-tsv
+{ echo "feature-id"; \
+  awk 'BEGIN{FS="\t"} NR>2 {sum=0; for(i=2;i<=NF;i++) sum+=$i; if(sum>0) print $1}' \
+  "${TMPDIR}/controls_PA_export/controls_PA.tsv"; \
+} > "${DBDIR}/features-in-controls-PA.txt"
+wc -l "${DBDIR}/features-in-controls-PA.txt"
+
+log "Extraction liste ASV des contrôles KNS"
+rm -rf "${TMPDIR}/controls_KNS_export"
+conda run -n "$QIIME2_ENV" qiime tools export \
+    --input-path table-controls-KNS.qza \
+    --output-path "${TMPDIR}/controls_KNS_export"
+conda run -n "$QIIME2_ENV" biom convert \
+    -i "${TMPDIR}/controls_KNS_export/feature-table.biom" \
+    -o "${TMPDIR}/controls_KNS_export/controls_KNS.tsv" \
+    --to-tsv
+{ echo "feature-id"; \
+  awk 'BEGIN{FS="\t"} NR>2 {sum=0; for(i=2;i<=NF;i++) sum+=$i; if(sum>0) print $1}' \
+  "${TMPDIR}/controls_KNS_export/controls_KNS.tsv"; \
+} > "${DBDIR}/features-in-controls-KNS.txt"
+wc -l "${DBDIR}/features-in-controls-KNS.txt"
+
+log "Extraction échantillons biologiques PA (sans contrôles)"
+conda run -n "$QIIME2_ENV" qiime feature-table filter-samples \
+    --i-table table.qza \
+    --m-metadata-file "${DBDIR}/sample-metadata.tsv" \
+    --p-where "[is_control]!='yes' AND [location]='PA'" \
+    --o-filtered-table table-bio-PA.qza
+
+log "Extraction échantillons biologiques KNS (sans contrôles)"
+conda run -n "$QIIME2_ENV" qiime feature-table filter-samples \
+    --i-table table.qza \
+    --m-metadata-file "${DBDIR}/sample-metadata.tsv" \
+    --p-where "[is_control]!='yes' AND [location]='KNS'" \
+    --o-filtered-table table-bio-KNS.qza
+
+log "Retrait des ASV de contrôles PA sur les échantillons PA"
+conda run -n "$QIIME2_ENV" qiime feature-table filter-features \
+    --i-table table-bio-PA.qza \
+    --m-metadata-file "${DBDIR}/features-in-controls-PA.txt" \
+    --p-exclude-ids \
+    --o-filtered-table table-decontam-PA.qza
+
+log "Retrait des ASV de contrôles KNS sur les échantillons KNS"
+conda run -n "$QIIME2_ENV" qiime feature-table filter-features \
+    --i-table table-bio-KNS.qza \
+    --m-metadata-file "${DBDIR}/features-in-controls-KNS.txt" \
+    --p-exclude-ids \
+    --o-filtered-table table-decontam-KNS.qza
+
+log "Fusion PA + KNS décontaminés → table-decontam.qza"
+conda run -n "$QIIME2_ENV" qiime feature-table merge \
+    --i-tables table-decontam-PA.qza \
+    --i-tables table-decontam-KNS.qza \
+    --p-overlap-method sum \
+    --o-merged-table table-decontam.qza
+
+conda run -n "$QIIME2_ENV" qiime feature-table summarize \
+    --i-table table-decontam.qza \
+    --m-sample-metadata-file "${DBDIR}/sample-metadata.tsv" \
+    --o-visualization ../visual/table-decontam-summary.qzv
+
+log "Mise à jour rep-seqs-decontam.qza (filtrage sur ASV présents dans table-decontam)"
+conda run -n "$QIIME2_ENV" qiime feature-table filter-seqs \
+    --i-data rep-seqs.qza \
+    --i-table table-decontam.qza \
+    --o-filtered-data rep-seqs-decontam.qza
+
+log "Vérification finale — samples dans table-decontam.qza :"
+rm -rf "${TMPDIR}/check_decontam_final"
+conda run -n "$QIIME2_ENV" qiime tools export \
+    --input-path table-decontam.qza \
+    --output-path "${TMPDIR}/check_decontam_final"
+conda run -n "$QIIME2_ENV" biom convert \
+    -i "${TMPDIR}/check_decontam_final/feature-table.biom" \
+    -o "${TMPDIR}/check_decontam_final/t.tsv" --to-tsv
+head -3 "${TMPDIR}/check_decontam_final/t.tsv" | \
+    awk 'NR==2 {for(i=2;i<=NF;i++) print $i}' | sort
+
+log "DÉCONTAMINATION SITE-SPÉCIFIQUE TERMINÉE"
+echo "→ table-decontam.qza et rep-seqs-decontam.qza prêts pour le script 2"
 
 # =============================================================================
 # 07a — CLASSIFICATION SILVA (16S)
