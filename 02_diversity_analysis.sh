@@ -144,42 +144,39 @@ conda run -n "$QIIME2_ENV" qiime metadata tabulate \
 
 # =============================================================================
 # ÉTAPE 07b — SÉPARATION procaryotes / candidats eucaryotes
-#
-# CORRECTION CLEF : on utilise --p-exclude "D_1__" (exclut tout ce qui a
-# un phylum procaryote assigné) plutôt que --p-include "Eukaryota,Unassigned"
-# qui manquait les échantillons KNS et les ASVs à annotation partielle.
-#
-# Logique :
-#   - Procaryotes = annotation contient "D_0__Bacteria" OU "D_0__Archaea"
-#                   avec un phylum reconnu (D_1__ non vide)
-#   - Candidats eucaryotes = tout le reste :
-#       * d__Eukaryota (explicitement)
-#       * Unassigned
-#       * ASVs avec annotation procaryote à très faible confiance (D_1__ vide)
-#       * ASVs 18S mal classées dans un clade procaryote
-#
-# --p-no-filter-empty-samples : CRITIQUE — empêche la suppression des
-# échantillons KNS qui ont peu ou pas d'ASVs eucaryotes, mais qu'on veut
-# garder dans la table pour les analyses comparatives PA vs KNS.
+# Deux passes propres, sans mélanger --p-include et --p-exclude
 # =============================================================================
-log "Séparation ASVs procaryotes / candidats eucaryotes (logique inclusive)"
+log "Séparation ASVs procaryotes / candidats eucaryotes"
 
-# Table procaryotes : exclut Eukaryota, Mitochondria, Chloroplast, Unassigned
-# et tout ce qui n'a pas de phylum assigné (D_1__; = phylum vide)
+# --- PROCARYOTES ---
+# Passe 1 : garder uniquement Bacteria + Archaea
 conda run -n "$QIIME2_ENV" qiime taxa filter-table \
     --i-table table-decontam.qza \
     --i-taxonomy taxonomy-silva-raw.qza \
     --p-mode contains \
-    --p-include "D_1__" \
-    --p-exclude "Eukaryota,Mitochondria,Chloroplast,Unassigned,D_1__;" \
+    --p-include "D_0__Bacteria,D_0__Archaea" \
+    --o-filtered-table table-prokaryotes-tmp.qza
+
+# Passe 2 : retirer Mitochondria et Chloroplast de ce pool
+conda run -n "$QIIME2_ENV" qiime taxa filter-table \
+    --i-table table-prokaryotes-tmp.qza \
+    --i-taxonomy taxonomy-silva-raw.qza \
+    --p-mode contains \
+    --p-exclude "Mitochondria,Chloroplast" \
     --o-filtered-table table-prokaryotes.qza
 
 conda run -n "$QIIME2_ENV" qiime taxa filter-seqs \
     --i-sequences rep-seqs-decontam.qza \
     --i-taxonomy taxonomy-silva-raw.qza \
     --p-mode contains \
-    --p-include "D_1__" \
-    --p-exclude "Eukaryota,Mitochondria,Chloroplast,Unassigned,D_1__;" \
+    --p-include "D_0__Bacteria,D_0__Archaea" \
+    --o-filtered-sequences rep-seqs-prokaryotes-tmp.qza
+
+conda run -n "$QIIME2_ENV" qiime taxa filter-seqs \
+    --i-sequences rep-seqs-prokaryotes-tmp.qza \
+    --i-taxonomy taxonomy-silva-raw.qza \
+    --p-mode contains \
+    --p-exclude "Mitochondria,Chloroplast" \
     --o-filtered-sequences rep-seqs-prokaryotes.qza
 
 conda run -n "$QIIME2_ENV" qiime feature-table summarize \
@@ -187,22 +184,21 @@ conda run -n "$QIIME2_ENV" qiime feature-table summarize \
     --m-sample-metadata-file "${DBDIR}/sample-metadata.tsv" \
     --o-visualization ../visual/table-prokaryotes-summary.qzv
 
-# Table candidats eucaryotes : tout ce qui n'est PAS dans les procaryotes
-# = Eukaryota + Unassigned + D_1__; (phylum vide) + Mitochondria + Chloroplast
-# On retire Mitochondria et Chloroplast ensuite avec PR2 qui ne les contient pas
+# --- CANDIDATS EUCARYOTES ---
+# Logique inverse : tout ce qui N'EST PAS Bacteria ni Archaea
+# = Eukaryota + Unassigned + annotations partielles/vides
 # --p-no-filter-empty-samples : conserve les échantillons KNS à signal faible
 conda run -n "$QIIME2_ENV" qiime taxa filter-table \
     --i-table table-decontam.qza \
     --i-taxonomy taxonomy-silva-raw.qza \
     --p-mode contains \
-    --p-exclude "D_1__" \
+    --p-exclude "D_0__Bacteria,D_0__Archaea" \
     --p-no-filter-empty-samples \
-    --o-filtered-table table-euk-candidates-raw.qza
+    --o-filtered-table table-euk-candidates-tmp.qza
 
-# On retire Mito et Chloroplast de ce pool (certaines ont D_1__; vide mais sont Mito)
-# On garde tout le reste y compris Unassigned, Eukaryota, etc.
+# Retirer Mito et Chloro de ce pool (peuvent apparaître hors Bacteria dans certaines annotations)
 conda run -n "$QIIME2_ENV" qiime taxa filter-table \
-    --i-table table-euk-candidates-raw.qza \
+    --i-table table-euk-candidates-tmp.qza \
     --i-taxonomy taxonomy-silva-raw.qza \
     --p-mode contains \
     --p-exclude "Mitochondria,Chloroplast" \
@@ -213,24 +209,22 @@ conda run -n "$QIIME2_ENV" qiime taxa filter-seqs \
     --i-sequences rep-seqs-decontam.qza \
     --i-taxonomy taxonomy-silva-raw.qza \
     --p-mode contains \
-    --p-exclude "D_1__" \
-    --o-filtered-sequences rep-seqs-euk-candidates-raw.qza
+    --p-exclude "D_0__Bacteria,D_0__Archaea" \
+    --o-filtered-sequences rep-seqs-euk-candidates-tmp.qza
 
 conda run -n "$QIIME2_ENV" qiime taxa filter-seqs \
-    --i-sequences rep-seqs-euk-candidates-raw.qza \
+    --i-sequences rep-seqs-euk-candidates-tmp.qza \
     --i-taxonomy taxonomy-silva-raw.qza \
     --p-mode contains \
     --p-exclude "Mitochondria,Chloroplast" \
     --o-filtered-sequences rep-seqs-euk-candidates.qza
 
-# Résumé CRITIQUE : ouvre ce fichier pour décider de RAREFACTION_DEPTH_EUK
-# et vérifier que les KNS sont bien présents cette fois
 conda run -n "$QIIME2_ENV" qiime feature-table summarize \
     --i-table table-euk-candidates.qza \
     --m-sample-metadata-file "${DBDIR}/sample-metadata.tsv" \
     --o-visualization ../visual/table-euk-candidates-summary.qzv
 
-# Comptage rapide pour log : combien d'échantillons PA vs KNS dans la table euk
+# Vérification rapide KNS dans la table eucaryotes
 conda run -n "$QIIME2_ENV" qiime tools export \
     --input-path table-euk-candidates.qza \
     --output-path "${TMPDIR}/euk_check"
@@ -238,7 +232,7 @@ conda run -n "$QIIME2_ENV" biom convert \
     -i "${TMPDIR}/euk_check/feature-table.biom" \
     -o "${TMPDIR}/euk_check/table.tsv" \
     --to-tsv
-log "Échantillons présents dans table-euk-candidates (vérification KNS) :"
+log "Échantillons dans table-euk-candidates (vérification KNS) :"
 awk 'NR==2 {for(i=2;i<=NF;i++) print $i}' "${TMPDIR}/euk_check/table.tsv" | sort
 
 # =============================================================================
