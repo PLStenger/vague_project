@@ -7,7 +7,8 @@
 
 set -euo pipefail
 
-RAREFACTION_DEPTH=42105
+#RAREFACTION_DEPTH=42105 # Uniquement PA (sans KNS)
+RAREFACTION_DEPTH=6100
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --depth) RAREFACTION_DEPTH="$2"; shift 2 ;;
@@ -30,7 +31,9 @@ PR2_SEQS_RAW="${DBDIR}/pr2_v5_SSU_seqs.qza"
 PR2_TAX_RAW="${DBDIR}/pr2_v5_SSU_tax.qza"
 PR2_SEQS_TRIMMED="${DBDIR}/pr2_v5_515F_926R_seqs.qza"
 
-RAREFACTION_DEPTH_EUK=1000   # À ajuster après inspection de table-euk-candidates-summary.qzv
+# Seuil eucaryotes : à ajuster après inspection de table-euk-candidates-summary.qzv
+# Mettre à 1 pour ne perdre aucun échantillon lors de l'exploration initiale
+RAREFACTION_DEPTH_EUK=2
 
 log() { echo -e "\n[$(date +'%F %T')] === $* ===\n"; }
 
@@ -71,7 +74,7 @@ cd "${QDIR}/core"
 #     --m-sample-metadata-file "${DBDIR}/sample-metadata.tsv" \
 #     --o-visualization ../visual/table-controls-only-summary.qzv
 
-# log "Extraction liste des ASV présents dans les contrôles (359 ASV)"
+# log "Extraction liste des ASV présents dans les contrôles"
 # mkdir -p "${TMPDIR}/controls_export"
 # rm -rf "${TMPDIR}/controls_export"/* 2>/dev/null || true
 # conda run -n "$QIIME2_ENV" qiime tools export \
@@ -116,7 +119,7 @@ cd "${QDIR}/core"
 
 # =============================================================================
 # ÉTAPE 07a — CLASSIFICATION SILVA 138.2 (16S — bactéries + archées)
-# À LANCER si taxonomy-silva-raw.qza absent
+# Commenté si taxonomy-silva-raw.qza déjà présent
 # =============================================================================
 log "Classification taxonomique SILVA 138.2 (16S)"
 
@@ -140,21 +143,43 @@ conda run -n "$QIIME2_ENV" qiime metadata tabulate \
     --o-visualization ../visual/taxonomy-silva-raw.qzv
 
 # =============================================================================
-# ÉTAPE 07b — SÉPARATION procaryotes / candidats eucaryotes post-SILVA
+# ÉTAPE 07b — SÉPARATION procaryotes / candidats eucaryotes
+#
+# CORRECTION CLEF : on utilise --p-exclude "D_1__" (exclut tout ce qui a
+# un phylum procaryote assigné) plutôt que --p-include "Eukaryota,Unassigned"
+# qui manquait les échantillons KNS et les ASVs à annotation partielle.
+#
+# Logique :
+#   - Procaryotes = annotation contient "D_0__Bacteria" OU "D_0__Archaea"
+#                   avec un phylum reconnu (D_1__ non vide)
+#   - Candidats eucaryotes = tout le reste :
+#       * d__Eukaryota (explicitement)
+#       * Unassigned
+#       * ASVs avec annotation procaryote à très faible confiance (D_1__ vide)
+#       * ASVs 18S mal classées dans un clade procaryote
+#
+# --p-no-filter-empty-samples : CRITIQUE — empêche la suppression des
+# échantillons KNS qui ont peu ou pas d'ASVs eucaryotes, mais qu'on veut
+# garder dans la table pour les analyses comparatives PA vs KNS.
 # =============================================================================
-log "Séparation ASVs 16S (procaryotes) / candidats 18S (eucaryotes)"
+log "Séparation ASVs procaryotes / candidats eucaryotes (logique inclusive)"
 
-# Table + séquences procaryotes strictes (exclut Eukaryota, Mito, Chloro, Unassigned)
+# Table procaryotes : exclut Eukaryota, Mitochondria, Chloroplast, Unassigned
+# et tout ce qui n'a pas de phylum assigné (D_1__; = phylum vide)
 conda run -n "$QIIME2_ENV" qiime taxa filter-table \
     --i-table table-decontam.qza \
     --i-taxonomy taxonomy-silva-raw.qza \
-    --p-exclude "Eukaryota,Mitochondria,Chloroplast,Unassigned" \
+    --p-mode contains \
+    --p-include "D_1__" \
+    --p-exclude "Eukaryota,Mitochondria,Chloroplast,Unassigned,D_1__;" \
     --o-filtered-table table-prokaryotes.qza
 
 conda run -n "$QIIME2_ENV" qiime taxa filter-seqs \
     --i-sequences rep-seqs-decontam.qza \
     --i-taxonomy taxonomy-silva-raw.qza \
-    --p-exclude "Eukaryota,Mitochondria,Chloroplast,Unassigned" \
+    --p-mode contains \
+    --p-include "D_1__" \
+    --p-exclude "Eukaryota,Mitochondria,Chloroplast,Unassigned,D_1__;" \
     --o-filtered-sequences rep-seqs-prokaryotes.qza
 
 conda run -n "$QIIME2_ENV" qiime feature-table summarize \
@@ -162,47 +187,83 @@ conda run -n "$QIIME2_ENV" qiime feature-table summarize \
     --m-sample-metadata-file "${DBDIR}/sample-metadata.tsv" \
     --o-visualization ../visual/table-prokaryotes-summary.qzv
 
-# Table + séquences candidats eucaryotes (Eukaryota SILVA + Unassigned)
+# Table candidats eucaryotes : tout ce qui n'est PAS dans les procaryotes
+# = Eukaryota + Unassigned + D_1__; (phylum vide) + Mitochondria + Chloroplast
+# On retire Mitochondria et Chloroplast ensuite avec PR2 qui ne les contient pas
+# --p-no-filter-empty-samples : conserve les échantillons KNS à signal faible
 conda run -n "$QIIME2_ENV" qiime taxa filter-table \
     --i-table table-decontam.qza \
     --i-taxonomy taxonomy-silva-raw.qza \
-    --p-include "Eukaryota,Unassigned" \
+    --p-mode contains \
+    --p-exclude "D_1__" \
+    --p-no-filter-empty-samples \
+    --o-filtered-table table-euk-candidates-raw.qza
+
+# On retire Mito et Chloroplast de ce pool (certaines ont D_1__; vide mais sont Mito)
+# On garde tout le reste y compris Unassigned, Eukaryota, etc.
+conda run -n "$QIIME2_ENV" qiime taxa filter-table \
+    --i-table table-euk-candidates-raw.qza \
+    --i-taxonomy taxonomy-silva-raw.qza \
+    --p-mode contains \
+    --p-exclude "Mitochondria,Chloroplast" \
+    --p-no-filter-empty-samples \
     --o-filtered-table table-euk-candidates.qza
 
 conda run -n "$QIIME2_ENV" qiime taxa filter-seqs \
     --i-sequences rep-seqs-decontam.qza \
     --i-taxonomy taxonomy-silva-raw.qza \
-    --p-include "Eukaryota,Unassigned" \
+    --p-mode contains \
+    --p-exclude "D_1__" \
+    --o-filtered-sequences rep-seqs-euk-candidates-raw.qza
+
+conda run -n "$QIIME2_ENV" qiime taxa filter-seqs \
+    --i-sequences rep-seqs-euk-candidates-raw.qza \
+    --i-taxonomy taxonomy-silva-raw.qza \
+    --p-mode contains \
+    --p-exclude "Mitochondria,Chloroplast" \
     --o-filtered-sequences rep-seqs-euk-candidates.qza
 
+# Résumé CRITIQUE : ouvre ce fichier pour décider de RAREFACTION_DEPTH_EUK
+# et vérifier que les KNS sont bien présents cette fois
 conda run -n "$QIIME2_ENV" qiime feature-table summarize \
     --i-table table-euk-candidates.qza \
     --m-sample-metadata-file "${DBDIR}/sample-metadata.tsv" \
     --o-visualization ../visual/table-euk-candidates-summary.qzv
 
+# Comptage rapide pour log : combien d'échantillons PA vs KNS dans la table euk
+conda run -n "$QIIME2_ENV" qiime tools export \
+    --input-path table-euk-candidates.qza \
+    --output-path "${TMPDIR}/euk_check"
+conda run -n "$QIIME2_ENV" biom convert \
+    -i "${TMPDIR}/euk_check/feature-table.biom" \
+    -o "${TMPDIR}/euk_check/table.tsv" \
+    --to-tsv
+log "Échantillons présents dans table-euk-candidates (vérification KNS) :"
+awk 'NR==2 {for(i=2;i<=NF;i++) print $i}' "${TMPDIR}/euk_check/table.tsv" | sort
+
 # =============================================================================
 # ÉTAPE 07c — Préparation PR2 DÉJÀ EFFECTUÉE (manuellement)
 # Les fichiers suivants existent déjà :
-#   ${DBDIR}/pr2_v5_SSU_seqs.qza          (import mothur fasta)
-#   ${DBDIR}/pr2_v5_SSU_tax.qza           (import taxonomie)
-#   ${DBDIR}/pr2_v5_515F_926R_seqs.qza    (extract-reads V4-V5)
-#   ${DBDIR}/pr2-v5-classifier-515F-926R.qza  (fit-classifier)
+#   ${DBDIR}/pr2_v5_SSU_seqs.qza
+#   ${DBDIR}/pr2_v5_SSU_tax.qza
+#   ${DBDIR}/pr2_v5_515F_926R_seqs.qza
+#   ${DBDIR}/pr2-v5-classifier-515F-926R.qza
 # =============================================================================
 
-# log "Import séquences PR2 dans QIIME2"
+# log "Import séquences PR2"
 # conda run -n "$QIIME2_ENV" qiime tools import \
 #     --type 'FeatureData[Sequence]' \
 #     --input-path "${DBDIR}/pr2_version_5.0.0_SSU_mothur.fasta" \
 #     --output-path "$PR2_SEQS_RAW"
 
-# log "Import taxonomie PR2 dans QIIME2"
+# log "Import taxonomie PR2"
 # conda run -n "$QIIME2_ENV" qiime tools import \
 #     --type 'FeatureData[Taxonomy]' \
 #     --input-format HeaderlessTSVTaxonomyFormat \
 #     --input-path "${DBDIR}/pr2_v5_tax_qiime2.tsv" \
 #     --output-path "$PR2_TAX_RAW"
 
-# log "Extraction in-silico région V4-V5 sur PR2 (515F/926R)"
+# log "Extraction in-silico V4-V5 sur PR2"
 # conda run -n "$QIIME2_ENV" qiime feature-classifier extract-reads \
 #     --i-sequences "$PR2_SEQS_RAW" \
 #     --p-f-primer "$PRIMER_F" \
@@ -241,7 +302,7 @@ conda run -n "$QIIME2_ENV" qiime taxa barplot \
     --o-visualization ../visual/taxa-bar-plots-eukaryotes-pr2.qzv
 
 # =============================================================================
-# ÉTAPE 07e — Barplot procaryotes avec taxonomie SILVA (sans conta eucaryotes)
+# ÉTAPE 07e — Barplot procaryotes (SILVA)
 # =============================================================================
 log "Barplot procaryotes (SILVA, Eukaryota/Mito/Chloro exclus)"
 
@@ -253,8 +314,11 @@ conda run -n "$QIIME2_ENV" qiime taxa barplot \
 
 # =============================================================================
 # ÉTAPE 08 — RARÉFACTION
-# Consulter table-prokaryotes-summary.qzv et table-euk-candidates-summary.qzv
-# pour ajuster les seuils avant de lancer
+# IMPORTANT : consulter table-euk-candidates-summary.qzv avant de choisir
+# RAREFACTION_DEPTH_EUK. Avec le nouveau filtrage inclusif, les KNS doivent
+# apparaître. Le seuil doit être <= au minimum de reads parmi les échantillons
+# à conserver. Si trop faible (< 10), la diversité alpha n'est pas interprétable
+# pour les eucaryotes — c'est une limite biologique réelle des données.
 # =============================================================================
 log "Raréfaction procaryotes à ${RAREFACTION_DEPTH} reads"
 
@@ -268,13 +332,14 @@ conda run -n "$QIIME2_ENV" qiime feature-table summarize \
     --m-sample-metadata-file "${DBDIR}/sample-metadata.tsv" \
     --o-visualization ../visual/table-rarefied-prokaryotes-summary.qzv
 
-log "Raréfaction eucaryotes à ${RAREFACTION_DEPTH_EUK} reads (ajuster si nécessaire)"
+log "Raréfaction eucaryotes à ${RAREFACTION_DEPTH_EUK} reads"
+log "⚠ Vérifier table-euk-candidates-summary.qzv et ajuster RAREFACTION_DEPTH_EUK"
 
 conda run -n "$QIIME2_ENV" qiime feature-table rarefy \
     --i-table table-euk-candidates.qza \
     --p-sampling-depth "$RAREFACTION_DEPTH_EUK" \
     --o-rarefied-table ../subtables/RarTable-eukaryotes-depth${RAREFACTION_DEPTH_EUK}.qza || \
-    echo "AVERTISSEMENT: raréfaction eucaryotes échouée — vérifier seuil dans table-euk-candidates-summary.qzv"
+    echo "AVERTISSEMENT: raréfaction eucaryotes échouée — ajuster RAREFACTION_DEPTH_EUK"
 
 # =============================================================================
 # ÉTAPE 09 — ARBRE PHYLOGÉNÉTIQUE (procaryotes)
@@ -398,7 +463,7 @@ conda run -n "$QIIME2_ENV" qiime tools export \
         --input-path subtables/RarTable-eukaryotes-depth${RAREFACTION_DEPTH_EUK}.qza \
         --output-path export/subtables/RarTable-eukaryotes || true
 
-# Fonction export diversité (accolade fermante corrigée)
+# Fonction export diversité
 export_tsv() {
     local qza="$1"
     local name="$2"
@@ -411,22 +476,22 @@ export_tsv() {
             cp "$f" "${QDIR}/export/diversity_tsv/${name}_$(basename "$f")"
         done
     rm -rf "$tmp"
-}  # <- accolade manquante dans le script original
+}
 
-export_tsv core/diversity/Vector-faith_pd.qza         faith_pd
-export_tsv core/diversity/Vector-shannon.qza           shannon
-export_tsv core/diversity/Vector-observed_asv.qza      observed_features
-export_tsv core/diversity/Vector-evenness.qza          evenness
-export_tsv core/diversity/Matrix-braycurtis.qza        bray_curtis
-export_tsv core/diversity/Matrix-jaccard.qza           jaccard
+export_tsv core/diversity/Vector-faith_pd.qza          faith_pd
+export_tsv core/diversity/Vector-shannon.qza            shannon
+export_tsv core/diversity/Vector-observed_asv.qza       observed_features
+export_tsv core/diversity/Vector-evenness.qza           evenness
+export_tsv core/diversity/Matrix-braycurtis.qza         bray_curtis
+export_tsv core/diversity/Matrix-jaccard.qza            jaccard
 export_tsv core/diversity/Matrix-unweighted_unifrac.qza unweighted_unifrac
 export_tsv core/diversity/Matrix-weighted_unifrac.qza   weighted_unifrac
-export_tsv core/pcoa/PCoA-braycurtis.qza               pcoa_braycurtis
-export_tsv core/pcoa/PCoA-jaccard.qza                  pcoa_jaccard
-export_tsv core/pcoa/PCoA-unweighted_unifrac.qza       pcoa_unweighted_unifrac
-export_tsv core/pcoa/PCoA-weighted_unifrac.qza         pcoa_weighted_unifrac
+export_tsv core/pcoa/PCoA-braycurtis.qza                pcoa_braycurtis
+export_tsv core/pcoa/PCoA-jaccard.qza                   pcoa_jaccard
+export_tsv core/pcoa/PCoA-unweighted_unifrac.qza        pcoa_unweighted_unifrac
+export_tsv core/pcoa/PCoA-weighted_unifrac.qza          pcoa_weighted_unifrac
 
-# Conversion BIOM → TSV + fusion taxonomies (SILVA pour prokaryotes, PR2 pour eucaryotes)
+# Conversion BIOM → TSV + fusion taxonomies
 for SUBSET in prokaryotes eukaryotes; do
     if [[ "$SUBSET" == "prokaryotes" ]]; then
         BIOM_FILE="${QDIR}/export/subtables/RarTable-prokaryotes/feature-table.biom"
@@ -453,10 +518,10 @@ for SUBSET in prokaryotes eukaryotes; do
     python3 << PYEOF
 import csv, re
 
-asv_path   = "${OUT_PREFIX}/ASV.tsv"
-tax_path   = "${TAX_FILE}"
-out_path   = "${OUT_PREFIX}/ASV_taxonomy.tsv"
-subset     = "${SUBSET}"
+asv_path = "${OUT_PREFIX}/ASV.tsv"
+tax_path = "${TAX_FILE}"
+out_path = "${OUT_PREFIX}/ASV_taxonomy.tsv"
+subset   = "${SUBSET}"
 
 taxonomy = {}
 with open(tax_path) as fh:
@@ -476,7 +541,7 @@ def parse_silva(s):
     return out
 
 def parse_pr2(s):
-    # PR2 mothur format: Kingdom;Supergroup;Division;Class;Order;Family;Genus;Species
+    # PR2 mothur : Kingdom;Supergroup;Division;Class;Order;Family;Genus;Species
     levels = [l.strip() for l in (s or "").split(";")]
     while len(levels) < 8:
         levels.append("Unassigned")
@@ -506,6 +571,10 @@ echo ""
 echo "======================================================================="
 echo "  RÉSULTATS DANS : ${QDIR}/"
 echo ""
+echo "  ⚠ PROCHAINE ÉTAPE : ouvrir table-euk-candidates-summary.qzv"
+echo "    et ajuster RAREFACTION_DEPTH_EUK (actuellement ${RAREFACTION_DEPTH_EUK})"
+echo "    Les KNS doivent maintenant apparaître dans cette table."
+echo ""
 echo "  PROCARYOTES (SILVA 138.2):"
 echo "  → visual/taxa-bar-plots-prokaryotes-silva.qzv"
 echo "  → export/subtables/RarTable-prokaryotes/ASV_taxonomy.tsv"
@@ -515,9 +584,9 @@ echo "  → visual/taxa-bar-plots-eukaryotes-pr2.qzv"
 echo "  → visual/taxonomy-pr2-eukaryotes.qzv"
 echo "  → export/subtables/RarTable-eukaryotes/ASV_taxonomy.tsv"
 echo ""
-echo "  DIVERSITÉ:"
-echo "  → visual/Emperor-*.qzv                   PCoA interactifs"
-echo "  → visual/alpha-*-significance.qzv         tests alpha"
-echo "  → visual/beta-*-permanova-*.qzv           PA vs KNS + sample_type"
-echo "  → export/diversity_tsv/                   matrices TSV brutes"
+echo "  DIVERSITÉ (procaryotes):"
+echo "  → visual/Emperor-*.qzv"
+echo "  → visual/alpha-*-significance.qzv"
+echo "  → visual/beta-*-permanova-*.qzv  (PA vs KNS + sample_type)"
+echo "  → export/diversity_tsv/"
 echo "======================================================================="
